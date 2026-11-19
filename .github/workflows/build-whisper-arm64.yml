@@ -2,6 +2,8 @@ name: Android ARM64 native — Whisper Tiny first-model gate
 
 on:
   pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [main, "setup/**"]
   workflow_dispatch:
@@ -122,3 +124,31 @@ jobs:
             -f event_type=transvibe_native_ready \
             -f "client_payload[run_id]=$RUN_ID" \
             -f "client_payload[head_sha]=$SOURCE_SHA"
+
+  auto-merge:
+    name: Merge native PR only after JNI contract and actual ARM64 build succeed
+    needs: [source-contract, build-arm64]
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.draft == false
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Merge only the tested source commit without bypassing protections
+        shell: bash
+        run: |
+          set -euo pipefail
+          current="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '.head.sha')"
+          test "$current" = "$EXPECTED_SHA" || { echo "::error::PR head changed"; exit 1; }
+          gh pr merge "$PR_NUMBER" -R "$GITHUB_REPOSITORY" --squash --match-head-commit "$EXPECTED_SHA"
+      - name: Rebuild main and then dispatch verified native artifact
+        shell: bash
+        run: gh workflow run build-whisper-arm64.yml -R "$GITHUB_REPOSITORY" --ref main
