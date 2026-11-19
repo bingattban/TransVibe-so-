@@ -20,15 +20,35 @@ jobs:
   source-contract:
     name: JNI and Kotlin contract tests
     runs-on: ubuntu-24.04
+    outputs:
+      app_ref: ${{ steps.select.outputs.ref }}
+      app_sha: ${{ steps.pin.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
+      - name: Choose validated Android source (one-time foundation bootstrap)
+        id: select
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF" = "refs/heads/main" ] &&
+            gh api "repos/$ANDROID_REPO/contents/app/src/main/cpp/whisper_jni.cpp?ref=main" > /dev/null 2>&1; then
+            echo 'ref=main' >> "$GITHUB_OUTPUT"
+          else
+            echo 'ref=setup/transvibe-android-foundation' >> "$GITHUB_OUTPUT"
+          fi
       - name: Fetch matching Android source
         uses: actions/checkout@v4
         with:
           repository: bingattban/TransVibe-android-
-          ref: ${{ github.ref == 'refs/heads/main' && 'main' || 'setup/transvibe-android-foundation' }}
+          ref: ${{ steps.select.outputs.ref }}
           path: android-src
           persist-credentials: false
+      - name: Pin exact tested Android source commit
+        id: pin
+        shell: bash
+        run: echo "sha=$(git -C android-src rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: Verify exact JNI declarations before building
         run: |
           python3 tools/test_contract.py \
@@ -50,7 +70,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: bingattban/TransVibe-android-
-          ref: ${{ github.ref == 'refs/heads/main' && 'main' || 'setup/transvibe-android-foundation' }}
+          # Compile exactly the same Android SHA that passed JNI tests.
+          ref: ${{ needs.source-contract.outputs.app_sha }}
           path: android-src
           persist-credentials: false
       - name: Use hosted Android SDK and install pinned NDK
@@ -106,10 +127,13 @@ jobs:
 
   request-android-import:
     name: Ask Android repository to create native import PR
-    needs: build-arm64
+    needs: [source-contract, build-arm64]
+    # Before Android bootstrap main is intentionally only a README. The
+    # one-time bootstrap job installs the native payload on the source branch.
     if: >-
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
-      github.ref == 'refs/heads/main'
+      github.ref == 'refs/heads/main' &&
+      needs.source-contract.outputs.app_ref == 'main'
     runs-on: ubuntu-24.04
     steps:
       - name: Dispatch only with explicit repo-scoped maintainer token
@@ -126,6 +150,73 @@ jobs:
             -f event_type=transvibe_native_ready \
             -f "client_payload[run_id]=$RUN_ID" \
             -f "client_payload[head_sha]=$SOURCE_SHA"
+
+  bootstrap-android-native:
+    name: One-time verified native handoff to Android source PR
+    needs: [source-contract, build-arm64]
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      github.ref == 'refs/heads/main' &&
+      needs.source-contract.outputs.app_ref == 'setup/transvibe-android-foundation'
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require scoped cross-repository token
+        shell: bash
+        env:
+          ANDROID_TOKEN: ${{ secrets.TRANSVIBE_ANDROID_DISPATCH_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$ANDROID_TOKEN" || {
+            echo "::error::Add TRANSVIBE_ANDROID_DISPATCH_TOKEN to TransVibe-so- (fine-grained Contents: read/write for Android repo only). No native import attempted."
+            exit 1
+          }
+      - name: Download verified library from this SAME successful native run
+        uses: actions/download-artifact@v4
+        with:
+          name: transvibe-whisper-arm64-api26
+          path: native-incoming
+      - name: Checkout Android source PR branch with narrowly scoped token
+        uses: actions/checkout@v4
+        with:
+          repository: bingattban/TransVibe-android-
+          ref: setup/transvibe-android-foundation
+          path: android-target
+          token: ${{ secrets.TRANSVIBE_ANDROID_DISPATCH_TOKEN }}
+          persist-credentials: true
+      - name: Verify tested source SHA, native hashes, JNI exports, ELF ABI and provenance
+        shell: bash
+        env:
+          TESTED_ANDROID_SHA: ${{ needs.source-contract.outputs.app_sha }}
+        run: |
+          set -euo pipefail
+          actual="$(git -C android-target rev-parse HEAD)"
+          test "$actual" = "$TESTED_ANDROID_SHA" || {
+            echo "::error::Android PR changed after native compilation; rerun native build for the new SHA."
+            exit 1
+          }
+          test "$(python3 -c 'import json;print(json.load(open("native-incoming/native-manifest.json"))["app_source_commit"])')" = "$actual" || {
+            echo "::error::Native manifest does not match Android PR head."
+            exit 1
+          }
+          python3 android-target/tools/verify_native_import.py --incoming native-incoming --app-root android-target/app
+      - name: Commit only the validated ARM64 binary and provenance to Android PR
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C android-target config user.name 'github-actions[bot]'
+          git -C android-target config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git -C android-target add app/libs/arm64-v8a/libtransvibe_whisper.so app/libs/native-provenance.json
+          if git -C android-target diff --cached --quiet; then
+            echo 'Native binary already present and identical: no new commit.'
+          else
+            git -C android-target commit -m "native: bootstrap verified Whisper Tiny from SO run $GITHUB_RUN_ID"
+            git -C android-target push origin HEAD:setup/transvibe-android-foundation
+            echo 'Android PR updated. Its CI must pass JVM/native/signed Preview+Release gates before automatic merge.'
+          fi
 
   auto-merge:
     name: Merge native PR only after JNI contract and actual ARM64 build succeed
