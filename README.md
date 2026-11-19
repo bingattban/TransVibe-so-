@@ -1,13 +1,16 @@
 # TransVibe SO
 
-**New public native library repository:** https://github.com/bingattban/TransVibe-so-
+Public native builder: https://github.com/bingattban/TransVibe-so-
+Companion application: https://github.com/bingattban/TransVibe-android-
 
-Source-of-truth companion project: [TransVibe-android-](https://github.com/bingattban/TransVibe-android-).
+This new repository compiles real CPU-only Whisper JNI for Android arm64-v8a/API 26 using a pinned official whisper.cpp commit and exact JNI/Kotlin contracts from the Android repository. It never reuses an older native-builder repository.
 
-This repository builds the real Android `arm64-v8a` Whisper JNI library from an exact checked-out Android JNI source and a pinned official whisper.cpp commit, on GitHub's Ubuntu runners. It does **not** compile C++ in Code On The Go and does not use any older native-builder repository.
+## Mandatory gates
 
-The first model stage is `ggml-tiny.bin`. The native build checks the JNI/Kotlin contract before compilation, and then validates ELF64 AArch64, JNI exports, 16KiB page alignment and SHA-256. GitHub Actions outputs `transvibe-whisper-arm64-api26`.
+1. Source contract and JNI/Kotlin tests run first.
+2. Only if all pass, cross-compile ARM64 with Android NDK 28.2 on Ubuntu GitHub Actions.
+3. Verify ELF64 AArch64, JNI exports, dynamic library dependencies, 16 KiB alignment, source identity and SHA-256. Upload the authenticated native artifact.
+4. Automatically squash-merge an internal, ready pull request to main ONLY after successful tests/build and unchanged head SHA. Respect normal branch protections; never force merge.
+5. On a successful main build, request a verified import PR in Android using the scoped `TRANSVIBE_ANDROID_DISPATCH_TOKEN`. Android CI automatically merges its import PR only after full source, native, JVM, signing, Preview and Release gates pass.
 
-Only successful source-main builds may request that the Android repository **create a native import Pull Request**, after its owner sets the scoped GitHub Actions secret `TRANSVIBE_ANDROID_DISPATCH_TOKEN`. No automatic merging, no diagnostic stub passed off as a real model, and no model weights in the public repositories.
-
-See [the first-stage runbook](README_FIRST_STAGE.md). 
+The first-model gate remains `ggml-tiny.bin`, pending owner acceptance of actual inference on the phone. No models or private keys are bundled. A successfully linked JNI binary does NOT prove ASR quality on-device.
