@@ -107,7 +107,9 @@ jobs:
   request-android-import:
     name: Ask Android repository to create native import PR
     needs: build-arm64
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     steps:
       - name: Dispatch only with explicit repo-scoped maintainer token
