@@ -1,13 +1,11 @@
-# TransVibe Native Builder — first accepted model only
+# First-model native build: Whisper Tiny
 
-This **new** public repository independently builds the production Android ARM64 `libtransvibe_whisper.so`, using the **exact JNI C++ file from the companion Android repository**. It does not reuse any former native builder repository.
+The reference companion is https://github.com/bingattban/TransVibe-android-; no older native repository is involved.
 
-Companion Android repository: https://github.com/bingattban/TransVibe-android-
+Pinned whisper.cpp commit: `d1be6fde11ac6e0407606b4e42fe72d34add8037`. Build target: Android arm64-v8a API 26 with NDK 28.2.13676358. Test JNI/Kotlin symbols, source fingerprints, C++ compilation and ELF dependency closure before delivery.
 
-Initial model gate: `ggml-tiny.bin`. No model weights are bundled; do not activate a second model before a real Code On The Go APK build, model inference validation and owner approval.
+The SO repository automatically merges only the same tested non-draft PR head. After a green main build it dispatches the artifact to Android if `TRANSVIBE_ANDROID_DISPATCH_TOKEN` exists. Android also requires a cross-repo read token `TRANSVIBE_SO_READ_TOKEN`; import is a PR which undergoes full signed Preview/Release testing before its own conditional automatic merge.
 
-Build prerequisites: Ubuntu GitHub runner, Android SDK/NDK 28.2.13676358, CMake, Ninja; upstream whisper.cpp pinned at commit `d1be6fde11ac6e0407606b4e42fe72d34add8037` (v1.9.5). Output must be Android arm64-v8a API 26 with 16 KiB segment alignment; exported JNI methods and ELF dependencies are checked.
+A failed job, wrong fingerprint, missing token, absent Android main source, missing signed APK or incompatible JNI must block progress. Do not bypass the gate.
 
-**Security gate**: native output is a workflow Artifact only. An optional cross-repository dispatch is sent after a successful build on `main` *when* the maintainer has installed the fine-grained `TRANSVIBE_ANDROID_DISPATCH_TOKEN` Actions secret, granting Actions write access **only** to TransVibe-android-. The Android workflow verifies the run and creates a Pull Request with the .so and manifest. There is no automatic merge.
-
-A successful native compile does not establish on-device model quality or runtime success. The first model remains unapproved until full phone testing.
+Only `ggml-tiny.bin` is active. Continue to the next model only following a successful physical Code On The Go build, actual inference and the owner's evaluation and approval.
