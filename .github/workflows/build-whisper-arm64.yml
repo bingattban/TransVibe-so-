@@ -87,6 +87,7 @@ jobs:
           python3 tools/package_native.py \
             --so "$so" \
             --jni android-src/app/src/main/cpp/whisper_jni.cpp \
+            --kotlin android-src/app/src/main/java/com/transvibe/app/nativebridge/WhisperNativeBridge.kt \
             --app-commit "$(git -C android-src rev-parse HEAD)" \
             --whisper-sha "${WHISPER_SHA}" \
             --readelf "${ANDROID_HOME}/ndk/${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" \

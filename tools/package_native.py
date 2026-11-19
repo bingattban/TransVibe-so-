@@ -42,6 +42,7 @@ def main():
     ap=argparse.ArgumentParser()
     ap.add_argument("--so",type=Path,required=True)
     ap.add_argument("--jni",type=Path,required=True)
+    ap.add_argument("--kotlin",type=Path,required=True)
     ap.add_argument("--whisper-sha",required=True)
     ap.add_argument("--app-commit",required=True)
     ap.add_argument("--readelf",required=True)
@@ -55,11 +56,12 @@ def main():
     binary=folder/"libtransvibe_whisper.so"
     shutil.copyfile(a.so,binary)
     manifest={
-        "schema_version":1,"engine":"whisper.cpp","first_model":"ggml-tiny.bin",
+        "schema_version":2,"engine":"whisper.cpp","first_model":"ggml-tiny.bin",
         "abi":"arm64-v8a","min_sdk":26,
         "app_repository":"bingattban/TransVibe-android-",
         "app_source_commit":a.app_commit,
         "jni_source_sha256":sha(a.jni),
+        "kotlin_source_sha256":sha(a.kotlin),
         "whisper_commit":a.whisper_sha,
         "binary_sha256":sha(binary),"needed":needed,
         "verification":"ELF-ABI-JNI-link-only; physical device inference NOT verified",
