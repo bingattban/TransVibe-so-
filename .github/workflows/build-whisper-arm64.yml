@@ -25,18 +25,24 @@ jobs:
       app_sha: ${{ steps.pin.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
-      - name: Choose validated Android source (one-time foundation bootstrap)
+      - name: Inspect Android main before choosing native contract
+        uses: actions/checkout@v4
+        with:
+          repository: bingattban/TransVibe-android-
+          ref: main
+          path: android-main
+          persist-credentials: false
+      - name: Select tested JNI source — feature until main has transcription fix
         id: select
         shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          if [ "$GITHUB_REF" = "refs/heads/main" ] &&
-            gh api "repos/$ANDROID_REPO/contents/app/src/main/cpp/whisper_jni.cpp?ref=main" > /dev/null 2>&1; then
-            echo 'ref=main' >> "$GITHUB_OUTPUT"
+          if grep -Fq 'params.detect_language = true;' android-main/app/src/main/cpp/whisper_jni.cpp; then
+            # The old JNI returns zero words because detect_language=true
+            # means detection ONLY in pinned whisper.cpp; do not compile it.
+            echo 'ref=fix/whisper-auto-transcribe' >> "$GITHUB_OUTPUT"
           else
-            echo 'ref=setup/transvibe-android-foundation' >> "$GITHUB_OUTPUT"
+            echo 'ref=main' >> "$GITHUB_OUTPUT"
           fi
       - name: Fetch matching Android source
         uses: actions/checkout@v4
@@ -60,6 +66,8 @@ jobs:
         run: |
           grep -q 'whisper_full(' android-src/app/src/main/cpp/whisper_jni.cpp
           grep -q 'whisper_init_from_file_with_params' android-src/app/src/main/cpp/whisper_jni.cpp
+      - name: Block detection-only mode before compiling native
+        run: python3 tools/check_transcription_mode.py --jni android-src/app/src/main/cpp/whisper_jni.cpp
 
   build-arm64:
     name: Build Android arm64-v8a API26 after contract tests
@@ -90,6 +98,11 @@ jobs:
           git clone --quiet https://github.com/ggml-org/whisper.cpp whisper-source
           git -C whisper-source checkout --detach "${WHISPER_SHA}"
           test "$(git -C whisper-source rev-parse HEAD)" = "${WHISPER_SHA}"
+      - name: Verify exact pinned upstream detect-language early return
+        run: |
+          python3 tools/check_transcription_mode.py \
+            --jni android-src/app/src/main/cpp/whisper_jni.cpp \
+            --upstream whisper-source/src/whisper.cpp
       - name: Configure real CPU-only Android JNI without phone-side CMake
         run: |
           cmake -S . -B build-native -G Ninja \
@@ -217,6 +230,73 @@ jobs:
             git -C android-target push origin HEAD:setup/transvibe-android-foundation
             echo 'Android PR updated. Its CI must pass JVM/native/signed Preview+Release gates before automatic merge.'
           fi
+
+  handoff-whisper-auto-fix:
+    name: Deliver verified corrected Whisper JNI to Android feature PR
+    needs: [source-contract, build-arm64]
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      github.ref == 'refs/heads/main' &&
+      needs.source-contract.outputs.app_ref == 'fix/whisper-auto-transcribe'
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require narrowly scoped Android repository write credential
+        shell: bash
+        env:
+          ANDROID_TOKEN: ${{ secrets.TRANSVIBE_ANDROID_DISPATCH_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$ANDROID_TOKEN" || {
+            echo "::error::Missing scoped TRANSVIBE_ANDROID_DISPATCH_TOKEN"
+            exit 1
+          }
+      - name: Download successful SO binary and provenance from the same run
+        uses: actions/download-artifact@v4
+        with:
+          name: transvibe-whisper-arm64-api26
+          path: native-incoming
+      - name: Checkout only the existing Android fix branch (never main)
+        uses: actions/checkout@v4
+        with:
+          repository: bingattban/TransVibe-android-
+          ref: fix/whisper-auto-transcribe
+          path: android-target
+          token: ${{ secrets.TRANSVIBE_ANDROID_DISPATCH_TOKEN }}
+          persist-credentials: true
+      - name: Reject source drift and verify ELF/JNI/sha256 before writing
+        shell: bash
+        env:
+          EXPECTED_SOURCE_SHA: ${{ needs.source-contract.outputs.app_sha }}
+        run: |
+          set -euo pipefail
+          actual="$(git -C android-target rev-parse HEAD)"
+          test "$actual" = "$EXPECTED_SOURCE_SHA" || {
+            echo "::error::Android JNI changed since native build; restart on current SHA."
+            exit 1
+          }
+          test "$(python3 -c 'import json;print(json.load(open("native-incoming/native-manifest.json"))["app_source_commit"])')" = "$actual" || {
+            echo "::error::Native manifest source SHA does not match tested app branch"
+            exit 1
+          }
+          python3 android-target/tools/verify_native_import.py --incoming native-incoming --app-root android-target/app
+      - name: Commit verified library and provenance only to Android feature branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C android-target config user.name 'github-actions[bot]'
+          git -C android-target config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git -C android-target add app/libs/arm64-v8a/libtransvibe_whisper.so app/libs/native-provenance.json
+          if git -C android-target diff --cached --quiet; then
+            echo 'Already matched: no change needed.'
+          else
+            git -C android-target commit -m "native: replace detect-only Whisper JNI from SO run $GITHUB_RUN_ID"
+            git -C android-target push origin HEAD:fix/whisper-auto-transcribe
+          fi
+          echo 'Android PR still requires all source/JVM/JNI/signing checks before automatic merge.'
 
   auto-merge:
     name: Merge native PR only after JNI contract and actual ARM64 build succeed
