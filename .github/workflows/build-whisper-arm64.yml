@@ -1,0 +1,117 @@
+name: Android ARM64 native — Whisper Tiny first-model gate
+
+on:
+  pull_request:
+  push:
+    branches: [main, "setup/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  NDK_VERSION: "28.2.13676358"
+  WHISPER_SHA: "d1be6fde11ac6e0407606b4e42fe72d34add8037"
+  ANDROID_REPO: "bingattban/TransVibe-android-"
+
+jobs:
+  source-contract:
+    name: JNI and Kotlin contract tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch matching Android source
+        uses: actions/checkout@v4
+        with:
+          repository: bingattban/TransVibe-android-
+          ref: ${{ github.ref == 'refs/heads/main' && 'main' || 'setup/transvibe-android-foundation' }}
+          path: android-src
+          persist-credentials: false
+      - name: Verify exact JNI declarations before building
+        run: |
+          python3 tools/test_contract.py \
+            android-src/app/src/main/cpp/whisper_jni.cpp \
+            android-src/app/src/main/java/com/transvibe/app/nativebridge/WhisperNativeBridge.kt
+      - name: Confirm source is not an empty diagnostic bridge
+        run: |
+          grep -q 'whisper_full(' android-src/app/src/main/cpp/whisper_jni.cpp
+          grep -q 'whisper_init_from_file_with_params' android-src/app/src/main/cpp/whisper_jni.cpp
+
+  build-arm64:
+    name: Build Android arm64-v8a API26 after contract tests
+    needs: source-contract
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: bingattban/TransVibe-android-
+          ref: ${{ github.ref == 'refs/heads/main' && 'main' || 'setup/transvibe-android-foundation' }}
+          path: android-src
+          persist-credentials: false
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Install the pinned Android NDK
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "ndk;${NDK_VERSION}"
+          test -f "${ANDROID_HOME}/ndk/${NDK_VERSION}/build/cmake/android.toolchain.cmake"
+      - name: Get exact pinned upstream whisper.cpp source
+        run: |
+          git clone --quiet https://github.com/ggml-org/whisper.cpp whisper-source
+          git -C whisper-source checkout --detach "${WHISPER_SHA}"
+          test "$(git -C whisper-source rev-parse HEAD)" = "${WHISPER_SHA}"
+      - name: Configure real CPU-only Android JNI without phone-side CMake
+        run: |
+          cmake -S . -B build-native -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="${ANDROID_HOME}/ndk/${NDK_VERSION}/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-26 \
+            -DANDROID_STL=c++_static \
+            -DTRANSVIBE_WHISPER_ROOT="${GITHUB_WORKSPACE}/whisper-source" \
+            -DTRANSVIBE_JNI_SOURCE="${GITHUB_WORKSPACE}/android-src/app/src/main/cpp/whisper_jni.cpp"
+      - name: Build real Whisper native library
+        run: cmake --build build-native --target transvibe_whisper -j 2
+      - name: Validate ELF64 ARM architecture, JNI exports, dependencies and 16 KiB alignment
+        run: |
+          set -euo pipefail
+          so="$(find build-native -name libtransvibe_whisper.so -type f -print -quit)"
+          test -n "$so"
+          python3 tools/package_native.py \
+            --so "$so" \
+            --jni android-src/app/src/main/cpp/whisper_jni.cpp \
+            --app-commit "$(git -C android-src rev-parse HEAD)" \
+            --whisper-sha "${WHISPER_SHA}" \
+            --readelf "${ANDROID_HOME}/ndk/${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" \
+            --output handoff
+          cat handoff/native-manifest.json
+          sha256sum handoff/app/libs/arm64-v8a/libtransvibe_whisper.so > handoff/SHA256SUMS
+      - name: Upload verified native artifact and provenance
+        uses: actions/upload-artifact@v4
+        with:
+          name: transvibe-whisper-arm64-api26
+          path: handoff/
+          if-no-files-found: error
+          retention-days: 30
+
+  request-android-import:
+    name: Ask Android repository to create native import PR
+    needs: build-arm64
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Dispatch only with explicit repo-scoped maintainer token
+        env:
+          GH_TOKEN: ${{ secrets.TRANSVIBE_ANDROID_DISPATCH_TOKEN }}
+          RUN_ID: ${{ github.run_id }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "No TRANSVIBE_ANDROID_DISPATCH_TOKEN configured; artifact is available, auto-transfer skipped."
+            exit 0
+          fi
+          gh api -X POST "repos/bingattban/TransVibe-android-/dispatches" \
+            -f event_type=transvibe_native_ready \
+            -f "client_payload[run_id]=$RUN_ID" \
+            -f "client_payload[head_sha]=$SOURCE_SHA"
