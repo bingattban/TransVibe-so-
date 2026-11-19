@@ -32,6 +32,8 @@ jobs:
           python3 tools/test_contract.py \
             android-src/app/src/main/cpp/whisper_jni.cpp \
             android-src/app/src/main/java/com/transvibe/app/nativebridge/WhisperNativeBridge.kt
+      - name: Fail-closed native package unit tests (before any build)
+        run: python3 -m unittest discover -s tests -p 'test_*.py' -v
       - name: Confirm source is not an empty diagnostic bridge
         run: |
           grep -q 'whisper_full(' android-src/app/src/main/cpp/whisper_jni.cpp
