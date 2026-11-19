@@ -49,13 +49,17 @@ jobs:
           ref: ${{ github.ref == 'refs/heads/main' && 'main' || 'setup/transvibe-android-foundation' }}
           path: android-src
           persist-credentials: false
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-      - name: Install the pinned Android NDK
+      - name: Use hosted Android SDK and install pinned NDK
         run: |
-          yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager "ndk;${NDK_VERSION}"
-          test -f "${ANDROID_HOME}/ndk/${NDK_VERSION}/build/cmake/android.toolchain.cmake"
+          set -euo pipefail
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          test -d "$SDK_ROOT/cmdline-tools"
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          SDKM="$(find "$SDK_ROOT/cmdline-tools" -type f -name sdkmanager -print -quit)"
+          test -n "$SDKM"
+          yes | "$SDKM" --licenses > /dev/null || true
+          "$SDKM" "ndk;${NDK_VERSION}"
+          test -f "$SDK_ROOT/ndk/${NDK_VERSION}/build/cmake/android.toolchain.cmake"
       - name: Get exact pinned upstream whisper.cpp source
         run: |
           git clone --quiet https://github.com/ggml-org/whisper.cpp whisper-source
